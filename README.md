@@ -18,3 +18,8 @@ This repository implements a **real-time fall detection system** using **TTSNet*
 
 2. During fall activity
 ![Fall Activity](images/fall.png)
+
+## Note
+This project was developed as part of **Garry Nelson’s bachelor’s thesis**.  
+The implementation represents a research prototype and may contain limitations.  
+Further improvements, optimizations, and extensions are possible and encouraged.
