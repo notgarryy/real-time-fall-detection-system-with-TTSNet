@@ -12,5 +12,9 @@ This repository implements a **real-time fall detection system** using **TTSNet*
 1. Connect the **IWR6843AOPEVM** radar sensor to your system.
 2. Run main.py
 
-```bash
-python main.py
+## Usage Example
+1. During non-fall activity
+![Non-Fall Activity](images/nonfall.png)
+
+2. During fall activity
+![Fall Activity](images/fall.png)
