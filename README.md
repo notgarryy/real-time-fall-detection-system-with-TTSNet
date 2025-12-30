@@ -8,6 +8,19 @@ This repository implements a **real-time fall detection system** using **TTSNet*
 - Utilizes Texas Instruments' IWR6843AOPEVM radar
 - Lightweight and modular implementation
 
+## Installation
+Note: This system has only been tested on Windows with Python 3.10.0
+1. **Install Python 3.10.0**  
+   Make sure Python 3.10.0 is installed on your system. You can download it from the [official Python website](https://www.python.org/downloads/release/python-3100/).
+
+2. **Create a virtual environment**  
+   Open a terminal or command prompt in the project directory and run:
+
+   **Windows:**
+   ```bash
+   python -m venv venv
+   venv\Scripts\activate
+
 ## Usage
 1. Connect the **IWR6843AOPEVM** radar sensor to your system.
 2. Run main.py
