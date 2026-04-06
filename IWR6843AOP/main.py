@@ -40,3 +40,4 @@ if __name__ == '__main__':
     sys.exit(app.exec_())
 
 # & C:\Users\ASUS\Documents\University\Radar\Code\RealTimeVENV\Scripts\Activate.ps1
+#

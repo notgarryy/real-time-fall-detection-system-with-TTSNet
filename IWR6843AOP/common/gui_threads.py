@@ -262,6 +262,9 @@ class parseUartThread(QThread):
     def run(self):
         while self.running:
             try:
+                # parse timing start
+                start_parse = time.time() * 1000.0
+
                 # Parse data
                 if self.parser.parserType == "SingleCOMPort":
                     outputDict = self.parser.readAndParseUartSingleCOMPort()
@@ -271,6 +274,10 @@ class parseUartThread(QThread):
                 if not outputDict:
                     time.sleep(0.001)
                     continue
+
+                # parse timing end
+                parse_time = time.time() * 1000.0 - start_parse
+                print(f"[LATENCY] Parse time         : {parse_time:.1f} ms")
 
                 self.fin.emit(outputDict)
 
@@ -287,8 +294,16 @@ class parseUartThread(QThread):
                         self._flush_csv_buffer()
                         self.last_csv_write = now
 
+                # frame processing timing start
+                start_frame = time.time() * 1000.0
+
                 # Process for ML pipeline
                 frame_points = self.processFrame(outputDict)
+
+                # frame processing timing end
+                frame_time = time.time() * 1000.0 - start_frame
+                print(f"[LATENCY] Frame process time : {frame_time:.1f} ms")
+
                 if frame_points is not None:
                     self.batchReady.emit(frame_points)
 
@@ -363,8 +378,8 @@ class preprocessThread(QThread):
         self.queue = deque(maxlen=20)
         self.frames_buffer = deque(maxlen=timesteps * 2)
 
-        self.eps_value = 0.3
-        self.min_points = 10
+        self.eps_value = 0.325
+        self.min_points = 12
         self.dbscan = DBSCAN(eps=self.eps_value, min_samples=self.min_points)
 
         self.mutex = QMutex()
@@ -387,6 +402,9 @@ class preprocessThread(QThread):
             logging.error("[preprocessThread] No scaler loaded. Exiting.")
             return
 
+        # window accumulation start time tracker
+        window_start_time = None
+
         while self.running:
             self.mutex.lock()
             while not self.queue and self.running:
@@ -403,7 +421,16 @@ class preprocessThread(QThread):
                 continue
 
             try:
+                # start window accumulation timer when buffer starts filling
+                if len(self.frames_buffer) == 0 and window_start_time is None:
+                    window_start_time = time.time() * 1000.0
+
+                # cluster processing timing
+                start_cluster = time.time() * 1000.0
                 centroid = self._processCluster(frame_points)
+                cluster_time = time.time() * 1000.0 - start_cluster
+                print(f"[LATENCY] Cluster time       : {cluster_time:.1f} ms")
+
                 if centroid is None:
                     continue
 
@@ -412,8 +439,23 @@ class preprocessThread(QThread):
                 if len(self.frames_buffer) < self.timesteps:
                     continue
 
+                # compute window accumulation time
+                window_accum_time = (time.time() * 1000.0 - window_start_time) if window_start_time else self.timesteps * 55.0
+                window_start_time = None  # reset for next window
+                print(f"[LATENCY] Window accumulation: {window_accum_time:.1f} ms "
+                      f"(theoretical: {self.timesteps * 55:.0f} ms)")
+
+                # scaling timing start
+                start_scale = time.time() * 1000.0
+
                 window = np.array(list(self.frames_buffer)[-self.timesteps:], dtype=np.float32)
                 scaled_window = self.scaler.transform(window)
+
+                # scaling timing end
+                scale_time = time.time() * 1000.0 - start_scale
+                preprocess_total = cluster_time + scale_time
+                print(f"[LATENCY] Scaling time       : {scale_time:.1f} ms")
+                print(f"[LATENCY] Preprocess total   : {preprocess_total:.1f} ms")
 
                 self.preprocessedReady.emit(scaled_window)
 
@@ -469,11 +511,13 @@ class predictThread(QThread):
         model_path=f"IWR/common/Models/{MODEL_FILE}",
         vote_window=5,
         fall_threshold=0.95,
-        fall_confirm_frames=7,      # <-- NEW: required consecutive fall frames
+        fall_confirm_frames=7,  
         emit_rate_hz=10,
         parent=None
     ):
         super().__init__(parent)
+
+        self.timesteps = TIMESTEPS
 
         self.model = None
         try:
@@ -507,7 +551,7 @@ class predictThread(QThread):
         self.fall_buffer = deque(maxlen=vote_window)
         self.fall_threshold = fall_threshold
 
-        # NEW: fall confirmation system
+        # fall confirmation system
         self.fall_confirm_frames = fall_confirm_frames
         self.consecutive_fall_frames = 0
         self.last_state = "Others"
@@ -555,17 +599,27 @@ class predictThread(QThread):
                 continue
 
             try:
-                # Measure inference latency
+                # queue wait time
+                start_total = time.time() * 1000.0
+
+                # existing inference timing
                 start_time = time.time()
                 predictions = self.model.predict(batch, verbose=0)[0]
                 inference_time = time.time() - start_time
 
-                # Rolling average inference time
+                # Replace existing rolling average block with this:
                 self.prediction_count += 1
-                self.avg_inference_time = (
-                    self.avg_inference_time * (self.prediction_count - 1) +
-                    inference_time
-                ) / self.prediction_count
+
+                # skip first 10 predictions from average (warm-up)
+                if self.prediction_count > 10:
+                    effective_count = self.prediction_count - 10
+                    self.avg_inference_time = (
+                        self.avg_inference_time * (effective_count - 1) +
+                        inference_time
+                    ) / effective_count
+                else:
+                    self.avg_inference_time = inference_time
+                    print(f"[LATENCY] Warm-up prediction {self.prediction_count}/10, skipping average")
 
                 prob_others = float(predictions[0])
                 prob_fall   = float(predictions[1])
@@ -598,13 +652,28 @@ class predictThread(QThread):
                     self.predictionReady.emit(result)
                     self.last_emit_time = now
 
+                # full latency summary per inference cycle
+                total_compute = time.time() * 1000.0 - start_total
+                print(f"[LATENCY] Inference time     : {inference_time*1000:.1f} ms")
+                print(f"[LATENCY] Avg inference time : {self.avg_inference_time*1000:.1f} ms "
+                      f"(over {self.prediction_count} predictions)")
+                print(f"[LATENCY] Total compute time : {total_compute:.1f} ms (excl. accumulation)")
+                print(f"[LATENCY] Theoretical total  : {(self.timesteps * 55) + total_compute:.1f} ms "
+                      f"(incl. {self.timesteps * 55} ms accumulation)")
+                print(f"[LATENCY] ─────────────────────────────────────────")
+
             except Exception as e:
                 logging.error(f"[predictThread] Prediction error: {e}")
                 continue
 
     def stop(self):
-        logging.info(
-            f"[predictThread] Avg inference time: {self.avg_inference_time*1000:.2f}ms"
+        print(
+            f"\n[LATENCY SUMMARY]\n"
+            f"  Total predictions        : {self.prediction_count}\n"
+            f"  Avg inference time       : {self.avg_inference_time*1000:.2f} ms\n"
+            f"  Window accumulation      : {self.timesteps * 55} ms (theoretical)\n"
+            f"  Avg total latency        : {(self.timesteps * 55) + (self.avg_inference_time*1000):.2f} ms\n"
+            f"  (window accumulation + avg inference)"
         )
         with QMutexLocker(self.mutex):
             self.running = False
